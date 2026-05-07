@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>소대 일정 관리</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+
+    <style>
+        :root { --primary: #4a69bd; --bg: #f1f2f6; --today: #38ada9; --tomorrow: #fa983a; }
+        body { margin: 0; font-family: 'Pretendard', sans-serif; background: var(--bg); color: #2f3542; padding-top: 75px; }
+        
+        /* 상단 컨트롤 바 */
+        .top-bar { position: fixed; top: 0; left: 0; width: 100%; background: white; display: flex; gap: 5px; padding: 10px; box-sizing: border-box; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .control-btn { flex: 1; padding: 12px 5px; border: none; border-radius: 8px; font-weight: bold; font-size: 0.85rem; cursor: pointer; transition: 0.2s; }
+        .btn-start { background: #dff9fb; color: #130f40; }
+        .btn-end { background: #dff9fb; color: #130f40; }
+        .btn-write { background: #4a69bd; color: white; opacity: 0.3; pointer-events: none; }
+        .btn-write.active { opacity: 1; pointer-events: auto; }
+        .btn-delete { background: #ff7675; color: white; }
+
+        /* 월 컨트롤 바 + 돋보기 버튼 */
+        .month-ctrl { display: flex; justify-content: space-between; align-items: center; background: white; padding: 10px 20px; border-bottom: 1px solid #eee; }
+        #currentMonthDisplay { font-weight: bold; font-size: 1.1rem; color: #1e3799; }
+        .search-btn { background: #eee; border: none; border-radius: 50%; width: 35px; height: 35px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 1.1rem; }
+
+        /* 캘린더 디자인: 선 위에 작은 글씨 표시 */
+        #calendar { background: white; border-radius: 0 0 20px 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 15px; }
+        .fc-event { border: none !important; border-radius: 4px !important; margin: 1px 2px !important; padding: 1px 3px !important; }
+        .fc-event-title { 
+            font-size: 0.65rem !important; 
+            font-weight: bold !important; 
+            overflow: hidden; 
+            text-overflow: ellipsis; 
+            white-space: nowrap; 
+        }
+
+        /* 공통 요약 스타일 (오늘/내일/돋보기팝업) */
+        .info-section { padding: 0 15px 25px 15px; display: flex; flex-direction: column; gap: 15px; }
+        .summary-card { background: white; padding: 15px; border-radius: 15px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .summary-card h3 { margin: 0 0 12px 0; font-size: 1rem; border-bottom: 2px solid #f1f1f1; padding-bottom: 5px; }
+        .group-container { margin-bottom: 12px; }
+        .group-title { font-weight: 800; font-size: 0.9rem; color: var(--primary); margin-bottom: 4px; display: block; }
+        .group-item { padding: 3px 0 3px 10px; border-left: 2px solid #eee; font-size: 0.85rem; }
+        .item-user { font-weight: 600; color: #333; }
+        .item-desc { color: #666; font-size: 0.8rem; }
+
+        /* 모달 및 팝업 */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 2000; justify-content: center; align-items: center; }
+        .modal-content { background: white; width: 90%; max-width: 400px; border-radius: 20px; padding: 20px; box-sizing: border-box; max-height: 80vh; overflow-y: auto; }
+        .input-group { margin-bottom: 12px; }
+        .input-group label { display: block; font-size: 0.75rem; color: #666; margin-bottom: 4px; }
+        .modal-content input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+    <div class="top-bar">
+        <button id="btnStart" class="control-btn btn-start" onclick="handleStartBtn()">시작일</button>
+        <button id="btnEnd" class="control-btn btn-end" onclick="setRange('end')">종료일</button>
+        <button id="btnWrite" class="control-btn btn-write" onclick="openWriteModal()">작성</button>
+        <button class="control-btn btn-delete" onclick="openDeleteModal()">삭제</button>
+    </div>
+
+    <div class="month-ctrl">
+        <button onclick="changeMonth('prev')" style="border:none; background:none; font-size:1.2rem;">◀</button>
+        <div id="currentMonthDisplay"></div>
+        <div style="display:flex; gap:10px; align-items:center;">
+            <button class="search-btn" onclick="openSearchModal()">🔍</button>
+            <button onclick="changeMonth('next')" style="border:none; background:none; font-size:1.2rem;">▶</button>
+        </div>
+    </div>
+
+    <div id="calendar"></div>
+
+    <div class="info-section">
+        <div class="summary-card" style="border-top: 4px solid var(--today);"><h3 style="color:var(--today);">📅 오늘 일정</h3><div id="today-view"></div></div>
+        <div class="summary-card" style="border-top: 4px solid var(--tomorrow);"><h3 style="color:var(--tomorrow);">📅 내일 일정</h3><div id="tomorrow-view"></div></div>
+    </div>
+
+    <div id="searchModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="searchDateTitle" style="margin-top:0;"></h3>
+            <div id="search-view"></div>
+            <button class="control-btn" style="width:100%; margin-top:15px; background:#eee;" onclick="closeModal('searchModal')">닫기</button>
+        </div>
+    </div>
+
+    <div id="writeModal" class="modal-overlay">
+        <div class="modal-content">
+            <h2>일정 등록</h2>
+            <p id="rangeText" style="font-size:0.8rem; color:#4a69bd; font-weight:bold; margin-bottom:15px;"></p>
+            <div class="input-group"><label>계급 및 성명</label><input type="text" id="userName" placeholder="상병 홍길동"></div>
+            <div class="input-group"><label>일정 제목 (카테고리)</label><input type="text" id="userCategory" placeholder="휴가, 외출, 근무 등"></div>
+            <div class="input-group"><label>세부 내용 (선 위에 표시됨)</label><input type="text" id="userDesc" placeholder="정기휴가 1회차"></div>
+            <div style="display:flex; gap:10px; margin-top:20px;">
+                <button class="control-btn" onclick="closeModal('writeModal')" style="background:#eee;">취소</button>
+                <button class="control-btn btn-write active" onclick="saveData()">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="deleteModal" class="modal-overlay">
+        <div class="modal-content">
+            <h2>일정 삭제</h2>
+            <div id="deleteList"></div>
+            <button class="control-btn" style="width:100%; margin-top:10px; background:#eee;" onclick="closeModal('deleteModal')">닫기</button>
+        </div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBZJJQctui_MrXyFAuBJIGX3LEUlcdmllo",
+            authDomain: "temp-93a7a.firebaseapp.com",
+            databaseURL: "https://temp-93a7a-default-rtdb.firebaseio.com",
+            projectId: "temp-93a7a",
+            storageBucket: "temp-93a7a.firebasestorage.app",
+            messagingSenderId: "365278803366",
+            appId: "1:365278803366:web:7428ca085fe3c4d5c04b67",
+            measurementId: "G-M041L5JVSS"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+        
+        let calendar, clickedDate = null, startDate = null, endDate = null, allEvents = [];
+        const colorMap = { "휴가": "#eb4d4b", "외출": "#6ab04c", "외박": "#f0932b", "근무": "#7ed6df", "교육": "#686de0" };
+
+        document.addEventListener('DOMContentLoaded', function() {
+            calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+                initialView: 'dayGridMonth', locale: 'ko', height: 'auto', headerToolbar: false,
+                dateClick: (info) => { clickedDate = info.dateStr; renderSelection(); },
+                datesSet: () => { updateMonthDisplay(); renderSelection(); },
+                eventContent: (arg) => {
+                    // 캘린더 선 위에 세부사항 표시 (title 대신 description을 우선 표시하거나 조합)
+                    let titleEl = document.createElement('div');
+                    titleEl.classList.add('fc-event-title');
+                    titleEl.innerText = arg.event.extendedProps.description || arg.event.title;
+                    return { domNodes: [titleEl] };
+                }
+            });
+            calendar.render();
+
+            db.ref('events').on('value', (snapshot) => {
+                const data = snapshot.val();
+                allEvents = [];
+                const now = new Date();
+                const todayStr = now.toISOString().split('T')[0];
+                const tomStr = new Date(new Date().setDate(now.getDate() + 1)).toISOString().split('T')[0];
+                
+                // 데이터 자동 삭제 로직 (두 달 이전 데이터)
+                const twoMonthsAgo = new Date();
+                twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+                let todayData = {}, tomData = {};
+
+                for (let id in data) {
+                    const ev = { id, ...data[id] };
+                    
+                    // 오래된 데이터 삭제 실행
+                    if (new Date(ev.rawEnd) < twoMonthsAgo) {
+                        db.ref('events/' + id).remove();
+                        continue;
+                    }
+
+                    const category = ev.title.split(']')[0].replace('[','');
+                    ev.backgroundColor = colorMap[category] || "#4a69bd";
+                    allEvents.push(ev);
+                    
+                    if(ev.start <= todayStr && ev.rawEnd >= todayStr) {
+                        if(!todayData[category]) todayData[category] = [];
+                        todayData[category].push(ev);
+                    }
+                    if(ev.start <= tomStr && ev.rawEnd >= tomStr) {
+                        if(!tomData[category]) tomData[category] = [];
+                        tomData[category].push(ev);
+                    }
+                }
+                calendar.removeAllEvents();
+                calendar.addEventSource(allEvents);
+                document.getElementById('today-view').innerHTML = renderGroupedHtml(todayData);
+                document.getElementById('tomorrow-view').innerHTML = renderGroupedHtml(tomData);
+            });
+        });
+
+        // 시작일 버튼 핸들러 (종료일 초기화 로직 포함)
+        function handleStartBtn() {
+            if (startDate && endDate) {
+                endDate = null;
+                document.getElementById('btnEnd').innerText = "종료일";
+                document.getElementById('btnEnd').style.cssText = "";
+                document.getElementById('btnWrite').classList.remove('active');
+            }
+            setRange('start');
+        }
+
+        function renderGroupedHtml(groupedData) {
+            let html = "";
+            const categories = Object.keys(groupedData);
+            if(categories.length === 0) return "<p style='color:#ccc; font-size:0.8rem;'>일정이 없습니다.</p>";
+            categories.forEach(cat => {
+                html += `<div class="group-container"><span class="group-title">${cat}</span>`;
+                groupedData[cat].forEach(ev => {
+                    const name = ev.title.split(']')[1].trim();
+                    html += `<div class="group-item"><span class="item-user">${name}</span> : <span class="item-desc">${ev.description || ''}</span></div>`;
+                });
+                html += `</div>`;
+            });
+            return html;
+        }
+
+        function openSearchModal() {
+            if(!clickedDate) return alert("확인할 날짜를 달력에서 먼저 선택하세요.");
+            document.getElementById('searchDateTitle').innerText = `🔍 ${clickedDate} 일정`;
+            const selectedData = {};
+            allEvents.filter(ev => clickedDate >= ev.start && clickedDate <= ev.rawEnd).forEach(ev => {
+                const cat = ev.title.split(']')[0].replace('[','');
+                if(!selectedData[cat]) selectedData[cat] = [];
+                selectedData[cat].push(ev);
+            });
+            document.getElementById('search-view').innerHTML = renderGroupedHtml(selectedData);
+            document.getElementById('searchModal').style.display = 'flex';
+        }
+
+        function renderSelection() {
+            document.querySelectorAll('.fc-daygrid-day').forEach(el => el.style.boxShadow = "");
+            if (clickedDate) {
+                const target = document.querySelector(`[data-date="${clickedDate}"]`);
+                if (target) target.style.boxShadow = "inset 0 0 0 3px #4a69bd";
+            }
+            if (startDate) {
+                const sTarget = document.querySelector(`[data-date="${startDate}"]`);
+                if (sTarget) sTarget.style.backgroundColor = "#e8f0fe";
+            }
+        }
+
+        function setRange(type) {
+            if (!clickedDate) return alert("날짜를 먼저 선택하세요.");
+            if (type === 'start') {
+                startDate = clickedDate;
+                document.getElementById('btnStart').innerText = "시작: " + startDate.substring(5);
+                document.getElementById('btnStart').style.cssText = "background: #4a69bd; color: white;";
+                renderSelection();
+            } else {
+                if (!startDate) return alert("시작일을 먼저 선택하세요.");
+                if (clickedDate < startDate) return alert("종료일이 시작일보다 빠릅니다.");
+                endDate = clickedDate;
+                document.getElementById('btnEnd').innerText = "종료: " + endDate.substring(5);
+                document.getElementById('btnEnd').style.cssText = "background: #4a69bd; color: white;";
+                document.getElementById('btnWrite').classList.add('active');
+            }
+        }
+
+        function openWriteModal() {
+            document.getElementById('rangeText').innerText = `📅 기간: ${startDate} ~ ${endDate}`;
+            document.getElementById('writeModal').style.display = 'flex';
+        }
+
+        function saveData() {
+            const name = document.getElementById('userName').value;
+            const cate = document.getElementById('userCategory').value;
+            const desc = document.getElementById('userDesc').value;
+            if (!name || !cate) return alert("성명과 제목을 입력해주세요.");
+            db.ref('events').push({
+                groupId: Date.now(),
+                title: `[${cate}] ${name}`,
+                start: startDate,
+                end: addOneDay(endDate),
+                rawEnd: endDate,
+                description: desc
+            });
+            closeModal('writeModal');
+            resetControls();
+        }
+
+        function openDeleteModal() {
+            if (!clickedDate) return alert("날짜를 선택하세요.");
+            const listEl = document.getElementById('deleteList');
+            listEl.innerHTML = "";
+            const targets = allEvents.filter(ev => clickedDate >= ev.start && clickedDate <= ev.rawEnd);
+            targets.forEach(ev => {
+                listEl.innerHTML += `<div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee;"><span>${ev.title}</span><button onclick="deleteGroup('${ev.groupId}')" style="background:#ff7675; color:white; border:none; padding:5px 10px; border-radius:5px;">삭제</button></div>`;
+            });
+            document.getElementById('deleteModal').style.display = 'flex';
+        }
+
+        function deleteGroup(gId) {
+            db.ref('events').once('value', (snapshot) => {
+                snapshot.forEach((child) => { if (child.val().groupId == gId) child.ref.remove(); });
+            });
+            closeModal('deleteModal');
+        }
+
+        function resetControls() {
+            startDate = null; endDate = null; clickedDate = null;
+            document.getElementById('btnStart').innerText = "시작일";
+            document.getElementById('btnStart').style.cssText = "";
+            document.getElementById('btnEnd').innerText = "종료일";
+            document.getElementById('btnEnd').style.cssText = "";
+            document.getElementById('btnWrite').classList.remove('active');
+            document.querySelectorAll('.fc-daygrid-day').forEach(el => { el.style.boxShadow = ""; el.style.backgroundColor = ""; });
+        }
+
+        function changeMonth(dir) { if(dir === 'prev') calendar.prev(); else calendar.next(); }
+        function updateMonthDisplay() { document.getElementById('currentMonthDisplay').innerText = calendar.view.title; }
+        function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+        function addOneDay(s) { let d = new Date(s); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; }
+    </script>
+</body>
+</html>
+
